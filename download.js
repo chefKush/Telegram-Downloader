@@ -48,22 +48,32 @@ function shouldSkipFile(media) {
 }
 
 // Helper to get proper file extension based on media type
-function getFileExtension(media) {
-    if (media.photo) return ".jpg";
+function getFileInfo(media) {
+    let originalFileName = null;
+    let extension = null;
+
+    if (media.photo) {
+        return { extension: ".jpg", originalFileName: null };
+    }
 
     if (media.video) {
         // Check if it has attributes with fileName
         if (media.video.attributes) {
             for (const attr of media.video.attributes) {
                 if (attr.fileName) {
+                    originalFileName = attr.fileName;
                     const fileName = attr.fileName.toLowerCase();
                     if (fileName.includes('.')) {
-                        return '.' + fileName.split('.').pop();
+                        extension = '.' + fileName.split('.').pop();
+                        return { extension, originalFileName };
                     }
                 }
             }
+        } else {
+            console.log(`   • Video has no attributes`);
         }
-        return ".mp4"; // default for video
+        console.log(`   • Using default .mp4 extension for video`);
+        return { extension: ".mp4", originalFileName }; // default for video
     }
 
     if (media.document) {
@@ -73,32 +83,45 @@ function getFileExtension(media) {
         if (doc.attributes) {
             for (const attr of doc.attributes) {
                 if (attr.fileName) {
+                    originalFileName = attr.fileName;
                     const fileName = attr.fileName.toLowerCase();
                     if (fileName.includes('.')) {
-                        return '.' + fileName.split('.').pop();
+                        extension = '.' + fileName.split('.').pop();
+                        console.log(`📄 Found file with extension: ${extension} (from filename: ${originalFileName})`);
+                        return { extension, originalFileName };
                     }
                 }
             }
+        } else {
+            console.log(`   • Document has no attributes`);
         }
 
         // Fallback to mime type
         if (doc.mimeType) {
             const mime = doc.mimeType.toLowerCase();
-            if (mime.includes("pdf")) return ".pdf";
-            if (mime.includes("zip")) return ".zip";
-            if (mime.includes("audio")) return ".mp3";
-            if (mime.includes("video/mp4")) return ".mp4";
-            if (mime.includes("video")) return ".mp4";
-            if (mime.includes("image/jpeg")) return ".jpg";
-            if (mime.includes("image/png")) return ".png";
-            if (mime.includes("image/gif")) return ".gif";
-            if (mime.includes("text/plain")) return ".txt";
-            if (mime.includes("application/msword")) return ".doc";
-            if (mime.includes("application/vnd.openxmlformats-officedocument.wordprocessingml.document")) return ".docx";
+            console.log(`📄 Using MIME type: ${mime}`);
+            if (mime.includes("pdf")) extension = ".pdf";
+            else if (mime.includes("zip")) extension = ".zip";
+            else if (mime.includes("audio")) extension = ".mp3";
+            else if (mime.includes("video/mp4")) extension = ".mp4";
+            else if (mime.includes("video")) extension = ".mp4";
+            else if (mime.includes("image/jpeg")) extension = ".jpg";
+            else if (mime.includes("image/png")) extension = ".png";
+            else if (mime.includes("image/gif")) extension = ".gif";
+            else if (mime.includes("text/plain")) extension = ".txt";
+            else if (mime.includes("application/msword")) extension = ".doc";
+            else if (mime.includes("application/vnd.openxmlformats-officedocument.wordprocessingml.document")) extension = ".docx";
+        } else {
+            console.log(`   • Document has no MIME type`);
         }
     }
 
-    return ".dat"; // fallback
+    if (!extension) {
+        console.log(`⚠️  Unknown file type, using .dat extension`);
+        extension = ".dat"; // fallback
+    }
+
+    return { extension, originalFileName };
 }
 
 // Helper to format bytes
@@ -194,18 +217,24 @@ function formatSpeed(bytesPerSecond) {
             if (!existsSync(channelFolder)) mkdirSync(channelFolder);
 
             // Get proper file extension
-            const ext = getFileExtension(message.media);
+            const { extension, originalFileName } = getFileInfo(message.media);
 
             let fileName = "";
             // PDFs use message text only (sanitized); others use id + short text
-            if (ext === ".pdf") {
+            if (extension === ".pdf") {
                 let pdfName = sanitize(message.message);
                 if (!pdfName) pdfName = `file_${message.id}`;
-                fileName = pdfName.endsWith(ext) ? pdfName : pdfName + ext;
+                fileName = pdfName.endsWith(extension) ? pdfName : pdfName + extension;
             } else {
                 let safeMsg = sanitize(message.message);
                 if (!safeMsg) safeMsg = "file";
-                fileName = `${message.id}_${safeMsg}${ext}`;
+                fileName = `${message.id}_${safeMsg}${extension}`;
+            }
+            // Final safety check to prevent double extensions
+            const expectedExt = extension.toLowerCase();
+            if (fileName.toLowerCase().endsWith(expectedExt + expectedExt)) {
+                fileName = fileName.substring(0, fileName.length - expectedExt.length);
+                console.log(`   • ⚠️  Removed double extension, final: "${fileName}"`);
             }
 
             const filePath = path.join(channelFolder, fileName);
