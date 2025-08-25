@@ -69,9 +69,10 @@ function getFileInfo(media) {
                     }
                 }
             }
-        } else {
-            console.log(`   • Video has no attributes`);
         }
+        // else {
+        //     console.log(`   • Video has no attributes`);
+        // }
         console.log(`   • Using default .mp4 extension for video`);
         return { extension: ".mp4", originalFileName }; // default for video
     }
@@ -142,10 +143,13 @@ function formatSpeed(bytesPerSecond) {
     console.log("🚀 Starting Telegram Media Downloader...\n");
 
     const client = new TelegramClient(stringSession, apiId, apiHash, {
-        connectionRetries: 10,
-        timeout: 300000, // 5 minutes timeout
-        requestRetries: 5,
-        retryDelay: 2000,
+        connectionRetries: 5,
+        timeout: 120000,
+        requestRetries: 3,
+        retryDelay: 1000,
+        floodSleepThreshold: 60,
+        useWSS: false,
+        testServers: false,
     });
 
     await client.start({
@@ -234,7 +238,7 @@ function formatSpeed(bytesPerSecond) {
             const expectedExt = extension.toLowerCase();
             if (fileName.toLowerCase().endsWith(expectedExt + expectedExt)) {
                 fileName = fileName.substring(0, fileName.length - expectedExt.length);
-                console.log(`   • ⚠️  Removed double extension, final: "${fileName}"`);
+                // console.log(`   • ⚠️  Removed double extension, final: "${fileName}"`);
             }
 
             const filePath = path.join(channelFolder, fileName);
@@ -249,6 +253,7 @@ function formatSpeed(bytesPerSecond) {
 
             // Keep retrying until download succeeds - don't move to next file until this one is complete
             while (!downloadSuccess) {
+                let buffer;
                 attempt++;
                 try {
                     console.log(`\n📥 Downloading: "${fileName}" (Attempt ${attempt})`);
@@ -256,12 +261,10 @@ function formatSpeed(bytesPerSecond) {
                     let lastPercent = 0;
                     let startTime = Date.now();
 
-                    const buffer = await client.downloadMedia(message.media, {
+                    buffer = await client.downloadMedia(message.media, {
                         progressCallback: (downloaded, total) => {
                             if (total > 0) {
                                 const percent = Math.round((downloaded / total) * 100);
-
-                                // Only update every 5% to avoid spam and update same line
                                 if (percent >= lastPercent + 5 || percent === 100) {
                                     const elapsed = (Date.now() - startTime) / 1000;
                                     const speed = elapsed > 0 ? downloaded / elapsed : 0;
@@ -269,11 +272,7 @@ function formatSpeed(bytesPerSecond) {
 
                                     // Use \r to overwrite the same line
                                     process.stdout.write(`\r📊 ${percent}% (${formatBytes(downloaded)}/${formatBytes(total)}) - ${speedText}`);
-
-                                    if (percent === 100) {
-                                        process.stdout.write('\n'); // New line when complete
-                                    }
-
+                                    if (percent === 100) process.stdout.write("\n");
                                     lastPercent = percent;
                                 }
                             }
@@ -289,50 +288,41 @@ function formatSpeed(bytesPerSecond) {
                     downloadCount++;
                     downloadSuccess = true;
 
-                } catch (error) {
-                    console.log(`❌ Error downloading "${fileName}": ${error.message}`);
-
-                    // Calculate retry delay based on attempt number (exponential backoff)
-                    const retryDelay = Math.min(5000 * Math.pow(1.5, attempt - 1), 30000); // Max 30 seconds
-                    console.log(`🔄 Retrying in ${Math.round(retryDelay / 1000)} seconds... (Attempt ${attempt + 1})`);
-
-                    // Wait before retrying
-                    await new Promise(res => setTimeout(res, retryDelay));
-
-                    // Optional: Add user input to skip file after many attempts
-                    if (attempt >= 10) {
-                        console.log(`\n⚠️  File "${fileName}" has failed ${attempt} times.`);
-                        console.log(`📝 Options:`);
-                        console.log(`   1. Continue retrying (press Enter)`);
-                        console.log(`   2. Skip this file (type 'skip')`);
-                        console.log(`   3. Exit program (type 'exit')`);
-
-                        const userChoice = await new Promise((resolve) => {
-                            const rl2 = readline.createInterface({
-                                input: process.stdin,
-                                output: process.stdout,
+                }
+                catch (err) {
+                    if (err.message && err.message.includes('FILE_REFERENCE_EXPIRED')) {
+                        console.log(`⚠️ File reference expired for "${fileName}". Refreshing message and retrying...`);
+                        // Refresh the message to get a new file reference
+                        const refreshed = await client.getMessages(channel, { ids: [message.id] });
+                        if (refreshed && refreshed.length > 0) {
+                            message.media = refreshed[0].media;
+                            // Try again
+                            buffer = await client.downloadMedia(message.media, {
+                                progressCallback: (downloaded, total) => {
+                                    if (total > 0) {
+                                        const percent = Math.round((downloaded / total) * 100);
+                                        if (percent >= lastPercent + 5 || percent === 100) {
+                                            const elapsed = (Date.now() - startTime) / 1000;
+                                            const speed = elapsed > 0 ? downloaded / elapsed : 0;
+                                            const speedText = formatSpeed(speed);
+                                            process.stdout.write(`\r📊 ${percent}% (${formatBytes(downloaded)}/${formatBytes(total)}) - ${speedText}`);
+                                            if (percent === 100) process.stdout.write("\n");
+                                            lastPercent = percent;
+                                        }
+                                    }
+                                }
                             });
-                            rl2.question('Your choice: ', (answer) => {
-                                rl2.close();
-                                resolve(answer.trim().toLowerCase());
-                            });
-                        });
-
-                        if (userChoice === 'skip') {
-                            console.log(`⏭️  Skipping "${fileName}" and moving to next file...`);
-                            downloadSuccess = true; // Exit the while loop without incrementing downloadCount
-                        } else if (userChoice === 'exit') {
-                            console.log(`👋 Exiting program as requested.`);
-                            process.exit(0);
                         } else {
-                            console.log(`🔄 Continuing to retry "${fileName}"...`);
+                            throw new Error('Failed to refresh message for expired file reference.');
                         }
+                    } else {
+                        throw err;
                     }
                 }
             }
 
             // Add a small delay between downloads to avoid rate limiting
-            await new Promise(res => setTimeout(res, 2000)); // 2 second delay
+            await new Promise(res => setTimeout(res, 500)); // 500 ms delay
         }
     }
 
